@@ -1,0 +1,3 @@
+llama-index
+pinecone-client
+python-dotenv
