@@ -34,7 +34,6 @@
    - Create a `.env` file with:
      ```env
      PINECONE_API_KEY=your_key_here
-     OPENAI_API_KEY=your_key_here
      ```
 
 3. **Run the Application**
