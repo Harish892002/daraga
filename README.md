@@ -44,10 +44,11 @@
 ## Project Structure
 ```
 src/
-├── api.py               # REST API logic
-├── epub_loader.py       # EPUB parsing logic
-├── preprocess.py        # Sentence splitting, metadata tracking
-├── build_rag.py         # RAG pipeline setup
-├── load_book.py         # Chapter and spine content loader
-└── main.py              # Main entrypoint
+├── api.py                   # REST API logic
+├── main.py                  # Main entrypoint
+├── build_rag.py             # RAG pipeline setup
+├── load_book.py             # Chapter and spine content loader
+├── preprocess.py            # Sentence splitting, metadata tracking
+└── loaders/
+    └── epub_loader.py       # EPUB parsing logic
 ```
