@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from src.loaders.epub_loader import download_epub_from_gutenberg, load_epub_documents
-from src.load_book import load_documents_by_chapter_progress
+from src.loaders.epub import download_epub_from_gutenberg, load_epub_documents
+from src.load import load_documents_by_chapter_progress
 from src.build_rag import initialize_rag_stack
 import requests
 from bs4 import BeautifulSoup
