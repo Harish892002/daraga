@@ -13,3 +13,6 @@ pinecone-client>=3.0.0
 tqdm
 python-dotenv
 requests
+
+fastapi
+uvicorn
