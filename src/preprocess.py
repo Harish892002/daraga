@@ -6,25 +6,35 @@ from src.load import get_epub_path
 
 nltk.download('punkt')
 
-def process_book_by_chapter_progress(gutenberg_id: str, chapter_number_or_name: str or int, chapter_percent: float):
+def process_book_by_chapter_progress(gutenberg_id: str, chapter_number_or_name, chapter_percent: float):
     epub_path = get_epub_path(gutenberg_id)
     documents, sentence_map, chapter_map = load_epub_documents(epub_path)
 
-    # Total sentence count in the entire book
-    total_sentences = sum(sentences for sentences in sentence_map.values())
+    # Parse chapter_read to int
+    if isinstance(chapter_number_or_name, str) and chapter_number_or_name.isdigit():
+        chapter_read = int(chapter_number_or_name)
+    elif isinstance(chapter_number_or_name, int):
+        chapter_read = chapter_number_or_name
+    else:
+        raise ValueError("Invalid chapter number")
 
-    # Calculate number of sentences to include based on percentage
-    target_sentence_count = int((chapter_percent / 100.0) * total_sentences)
+    # Count how many sentences to allow in total
+    sentence_limit = 0
+    for i in range(1, chapter_read):
+        sentence_limit += sentence_map.get(i, 0)
 
-    cumulative_count = 0
-    allowed_docs = []
+    current_chapter_sentences = sentence_map.get(chapter_read, 0)
+    current_cutoff = int((chapter_percent / 100.0) * current_chapter_sentences)
+    sentence_limit += current_cutoff
+
+    filtered_docs = []
     for doc in documents:
-        chapter = doc.metadata.get("chapter")
-        sent_range = doc.metadata.get("sentence_range", (0, 0))
-        count = sent_range[1] - sent_range[0]
-        cumulative_count += count
-        allowed_docs.append(doc)
-        if cumulative_count >= target_sentence_count:
-            break
+        chap = doc.metadata.get("spine_index", 0)
+        start = doc.metadata.get("sentence_start", 0)
 
-    return allowed_docs, sentence_map, chapter_map
+        if chap < chapter_read:
+            filtered_docs.append(doc)
+        elif chap == chapter_read and start <= current_cutoff:
+            filtered_docs.append(doc)
+
+    return filtered_docs, sentence_map, chapter_map
