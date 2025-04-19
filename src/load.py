@@ -1,42 +1,39 @@
+import requests
 import os
-from dotenv import load_dotenv
-from src.loaders.epub import download_epub_from_gutenberg, load_epub_documents
 
-load_dotenv()
-GUTENBERG_ID = os.getenv("GUTENBERG_ID", "1661")
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-def load_documents_by_chapter_progress(chapter_read: int, chapter_percent: float):
-    epub_path = download_epub_from_gutenberg(GUTENBERG_ID)
-    full_docs, sentence_map, chapter_map = load_epub_documents(epub_path)
+def get_gutenberg_id(book_title: str) -> int:
+    try:
+        response = requests.get(f"https://gutendex.com/books?search={book_title}")
+        response.raise_for_status()
+        data = response.json()
+        if data["count"] == 0:
+            raise ValueError("No book found with the given title.")
+        return data["results"][0]["id"]
+    except Exception as e:
+        raise RuntimeError(f"Failed to get Gutenberg ID: {e}")
 
-    # Calculate sentence threshold for access
-    sentence_limit = 0
-    for i in range(1, chapter_read):
-        sentence_limit += sentence_map.get(i, 0)
+def get_epub_path(gutenberg_id: int) -> str:
+    epub_path = os.path.join(DATA_DIR, f"{gutenberg_id}.epub")
+    if os.path.exists(epub_path):
+        return epub_path
 
-    chapter_sentences = sentence_map.get(chapter_read, 0)
-    cutoff_sentence = int((chapter_percent / 100.0) * chapter_sentences)
-    sentence_limit += cutoff_sentence
-
-    print(f"\n📘 Sentence limit: {sentence_limit} (Up to Chapter {chapter_read} at {chapter_percent:.1f}%)")
-    print(f"🔎 Chapter Title: {chapter_map.get(chapter_read, 'Unknown')}")
-
-    accessible_docs = []
-    for doc in full_docs:
-        chap = doc.metadata.get("spine_index", 0)
-        start = doc.metadata.get("sentence_start", 0)
-        end = doc.metadata.get("sentence_end", 0)
-
-        # Debug filtering info
-        # print(f"Checking: Chapter {chap} ({doc.metadata.get('chapter_title', 'N/A')}) | Sentences {start}-{end} -> ", end="")
-
-        if chap < chapter_read:
-            accessible_docs.append(doc)
-            print("✅ Included (earlier chapter)")
-        elif chap == chapter_read and start <= cutoff_sentence:
-            accessible_docs.append(doc)
-            print("✅ Included (partial chapter)")
+    print(f"📚 Fetching book from Project Gutenberg: {gutenberg_id}")
+    try:
+        response = requests.get(
+            f"https://www.gutenberg.org/ebooks/{gutenberg_id}.epub.images",
+            allow_redirects=True
+        )
+        if response.status_code == 200:
+            real_url = response.url.replace("ebooks", "files").replace(".epub.images", f"/{gutenberg_id}.epub")
+            epub_response = requests.get(real_url)
+            epub_response.raise_for_status()
+            with open(epub_path, "wb") as f:
+                f.write(epub_response.content)
+            return epub_path
         else:
-            print("❌ Excluded")
-
-    return accessible_docs
+            raise ValueError("EPUB file not available for this book.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download EPUB: {e}")

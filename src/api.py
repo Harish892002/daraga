@@ -1,73 +1,58 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from src.loaders.epub import download_epub_from_gutenberg, load_epub_documents
-from src.load import load_documents_by_chapter_progress
-from src.build_rag import initialize_rag_stack
-import requests
-from bs4 import BeautifulSoup
+# src/api.py
 
+import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from dotenv import load_dotenv
+from src.load import get_gutenberg_id, get_epub_path
+from src.preprocess import process_book_by_chapter_progress
+from src.build_rag import initialize_rag_stack
+from llama_index.core.schema import Document
+from typing import Union
+
+load_dotenv()
 app = FastAPI()
 
 class AskRequest(BaseModel):
+    book_title: str
+    chapter_read: Union[int, str]
+    chapter_percent: float
     question: str
-    chapter: int
-    percent: float
-    book_id: str = None
-    book_title: str = None
-
-def search_gutenberg_book_id(title: str) -> str:
-    query = title.strip().replace(" ", "+")
-    search_url = f"https://www.gutenberg.org/ebooks/search/?query={query}"
-    response = requests.get(search_url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    first_link = soup.select_one("li.booklink a.link")
-    if first_link and first_link.get("href"):
-        return first_link["href"].split("/")[-1]
-    raise ValueError("No book found on Project Gutenberg with that title.")
 
 @app.post("/ask")
-def ask_question(req: AskRequest):
+async def ask_book(request: AskRequest):
     try:
-        if req.book_id:
-            gutenberg_id = req.book_id
-        elif req.book_title:
-            gutenberg_id = search_gutenberg_book_id(req.book_title)
-        else:
-            return {"error": "Please provide either 'book_id' or 'book_title'."}
+        # Resolve Gutenberg ID and ensure EPUB is downloaded
+        gutenberg_id = get_gutenberg_id(request.book_title)
+        epub_path = get_epub_path(gutenberg_id)
 
-        epub_path = download_epub_from_gutenberg(gutenberg_id)
-        full_docs, sentence_map, chapter_map = load_epub_documents(epub_path)
-        max_chapter = max(sentence_map.keys())
+        # Process & chunk up to the user’s read progress
+        docs, sentence_map, chapter_map = process_book_by_chapter_progress(
+            str(gutenberg_id),
+            request.chapter_read,
+            request.chapter_percent
+        )
 
-        if not (1 <= req.chapter <= max_chapter):
-            return {"error": f"Chapter must be between 1 and {max_chapter}"}
-        if not (0.0 <= req.percent <= 100.0):
-            return {"error": "Percent must be between 0 and 100"}
+        # Flatten and filter for Document instances
+        if docs and isinstance(docs[0], list):
+            docs = [d for sub in docs for d in sub]
+        docs = [d for d in docs if isinstance(d, Document)]
 
-        # 1. Load document chunks based on progress
-        docs = load_documents_by_chapter_progress(req.chapter, req.percent, sentence_map, full_docs)
+        # No context?  Fallback
+        if not docs:
+            return {"answer": "I don't have context for the asked question.", "sources": []}
 
-        # 2. Initialize retriever
-        query_engine = initialize_rag_stack(docs)
+        # Build RAG and run query
+        query_engine = initialize_rag_stack(docs, index_name=str(gutenberg_id))
+        response = query_engine.query(request.question)
 
-        # 3. Query the index
-        response = query_engine.query(req.question)
-
-        # 4. Validate or fallback
-        if not response or not response.source_nodes:
-            return {"answer": "I don't have context for this question."}
+        # If no source nodes, fallback
+        if not getattr(response, "source_nodes", None):
+            return {"answer": "I don't have context for the asked question.", "sources": []}
 
         return {
             "answer": str(response),
-            "sources": [
-                {
-                    "chapter": node.metadata.get("spine_index"),
-                    "title": node.metadata.get("chapter_title"),
-                    "range": f"{node.metadata.get('sentence_start')}-{node.metadata.get('sentence_end')}"
-                }
-                for node in response.source_nodes
-            ]
+            "sources": [node.metadata for node in response.source_nodes]
         }
-
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))

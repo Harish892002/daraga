@@ -1,75 +1,79 @@
-from dotenv import load_dotenv
-from src.loaders.epub import download_epub_from_gutenberg, load_epub_documents
-from src.load import load_documents_by_chapter_progress
+# src/main.py
+
+import os
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from src.preprocess import process_book_by_chapter_progress
 from src.build_rag import initialize_rag_stack
-import re
+from llama_index.core.schema import Document
 
-load_dotenv()
+app = FastAPI()
 
-# 📘 Load full EPUB manifest to determine max chapters
-epub_path = download_epub_from_gutenberg("1661")
-docs, sentence_map, chapter_map = load_epub_documents(epub_path)
-max_chapter = max(sentence_map.keys())
+# Allow CORS for any frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-print(f"\n📘 This book has {max_chapter} manifest chapters.\n")
+class QueryInput(BaseModel):
+    book_title: str
+    chapter_read: int
+    chapter_percent: float
+    question: str
 
-# 🔢 Show available chapters to user
-for idx in range(1, max_chapter + 1):
-    print(f"{idx}. {chapter_map.get(idx, 'Unknown')}")
+def get_documents_upto_progress(docs, sentence_map, chapter_map, chapter_read, chapter_percent):
+    # Build cumulative sentence counts per chapter
+    total = 0
+    limits = {}
+    for chap_id, count in sentence_map.items():
+        limits[chap_id] = (total, total + count)
+        total += count
 
-# 🔢 Ask user for input
-try:
-    chapter_read = int(input(f"\n📖 Up to which chapter have you read? (1–{max_chapter}): "))
-    chapter_percent = float(input(f"📊 What percentage of Chapter {chapter_read} have you read? (0–100): "))
-    if chapter_read < 1 or chapter_read > max_chapter or not (0 <= chapter_percent <= 100):
-        raise ValueError
-except ValueError:
-    print(f"⚠️ Invalid input. Defaulting to Chapter {max_chapter}, 100%.")
-    chapter_read = max_chapter
-    chapter_percent = 100.0
+    # Compute cutoff based on fully‑read chapters + partial current chapter
+    cutoff = 0
+    for chap_id in sorted(limits):
+        if chap_id < chapter_read:
+            cutoff += sentence_map[chap_id]
+        elif chap_id == chapter_read:
+            cutoff += int(sentence_map[chap_id] * (chapter_percent / 100))
+            break
 
-# 📄 Load document chunks up to this point
-documents = load_documents_by_chapter_progress(chapter_read, chapter_percent)
+    # Return only those chunks whose start is before the cutoff
+    allowed = []
+    for doc in docs:
+        start = doc.metadata.get("sentence_start", 0)
+        if start < cutoff:
+            allowed.append(doc)
+    return allowed
 
-# 🧠 Build index
-query_engine = initialize_rag_stack(documents)
+@app.post("/ask")
+def ask_question(query_input: QueryInput):
+    # Load & chunk the EPUB up to the claimed progress
+    docs, sentence_map, chapter_map = process_book_by_chapter_progress(
+        query_input.book_title,
+        query_input.chapter_read,
+        query_input.chapter_percent
+    )
 
-# 💬 Query loop
-while True:
-    query = input("> Ask a question (or type 'exit'): ")
-    if query.lower() in ["exit", "quit"]:
-        break
-    try:
-        response = query_engine.query(query)
+    # Filter out any chunks beyond that progress
+    context_docs = get_documents_upto_progress(
+        docs,
+        sentence_map,
+        chapter_map,
+        query_input.chapter_read,
+        query_input.chapter_percent
+    )
 
-        # 📎 Validate context scope
-        valid = True
-        for node in response.source_nodes:
-            chap = node.metadata.get("spine_index", 0)
-            start = node.metadata.get("sentence_start", 0)
-            if chap > chapter_read or (chap == chapter_read and start > int((chapter_percent / 100.0) * sentence_map[chap])):
-                valid = False
-                break
+    # If nothing to retrieve, fall back
+    if not context_docs:
+        return {"answer": "I don't have context for the asked question."}
 
-        # 🔍 Keyword Sanity Check (better tokenization)
-        query_keywords = re.findall(r"\b[a-zA-Z][a-zA-Z]+\b", query.lower())
-        keyword_match = any(
-            any(kw in node.text.lower() for kw in query_keywords)
-            for node in response.source_nodes
-        )
+    # Build the RAG stack with only the allowed docs
+    query_engine = initialize_rag_stack(context_docs, index_name=query_input.book_title)
 
-        if not response or not valid or not keyword_match:
-            print("\n❓ I don't have context for this question.\n")
-            continue
-
-        # ✅ Valid and relevant
-        print(f"\n🧠 Answer:\n{response}\n")
-
-        # 🔍 Debug: Show source chunks used
-        print("📎 Source Chunks Used:")
-        for node in response.source_nodes:
-            meta = node.metadata
-            print(f" - Chapter {meta.get('spine_index')} ({meta.get('chapter_title')}) | Sentences {meta.get('sentence_start')}-{meta.get('sentence_end')}")
-
-    except Exception as e:
-        print(f"\n❗ Error: {e}\n")
+    # Run the query
+    response = query_engine.query(query_input.question)
+    return {"answer": str(response)}

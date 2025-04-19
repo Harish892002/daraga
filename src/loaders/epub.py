@@ -2,82 +2,76 @@ import os
 import requests
 from ebooklib import epub, ITEM_DOCUMENT
 from bs4 import BeautifulSoup
-from llama_index.core.schema import Document
-from tempfile import NamedTemporaryFile
-from nltk.tokenize import sent_tokenize
 import nltk
-import re
+from llama_index.core.schema import Document
+nltk.download('punkt')
+from nltk.tokenize import sent_tokenize
 
-nltk.download("punkt")
+DATA_DIR = "data"
 
-CHUNK_SIZE = 5  # number of sentences per sub-chunk
+def resolve_book_name_to_gutenberg_id(book_name: str) -> str:
+    """
+    Queries the Gutendex API to find the best matching Gutenberg ID for a given book title.
+    """
+    try:
+        response = requests.get(f"https://gutendex.com/books/?search={book_name}")
+        response.raise_for_status()
+        results = response.json()["results"]
+        if results:
+            return str(results[0]["id"])
+    except Exception:
+        pass
+    return None
 
+def download_epub_from_gutenberg(gutenberg_id):
+    url = f"https://www.gutenberg.org/ebooks/{gutenberg_id}.epub.images"
+    response = requests.get(url, allow_redirects=True)
+    if response.status_code != 200:
+        raise ValueError(f"Failed to download EPUB: {url}")
 
-def download_epub_from_gutenberg(book_id_or_url: str) -> str:
-    if book_id_or_url.isdigit():
-        url = f"https://www.gutenberg.org/ebooks/{book_id_or_url}.epub.images"
-        response = requests.get(url, allow_redirects=True)
-        if response.status_code == 200:
-            redirected_url = response.url
-            epub_data = requests.get(redirected_url).content
-        else:
-            raise ValueError(f"Could not fetch EPUB for book ID {book_id_or_url}")
-    elif book_id_or_url.startswith("http"):
-        epub_data = requests.get(book_id_or_url).content
-    else:
-        raise ValueError("Provide a valid Project Gutenberg ID or URL.")
+    book_path = os.path.join(DATA_DIR, f"{gutenberg_id}.epub")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(book_path, 'wb') as f:
+        f.write(response.content)
 
-    with NamedTemporaryFile(delete=False, suffix=".epub") as tmp_file:
-        tmp_file.write(epub_data)
-        return tmp_file.name
+    return book_path
 
-
-def load_epub_documents(epub_path: str):
+def load_epub_documents(epub_path):
     book = epub.read_epub(epub_path)
-    manifest = list(book.get_items_of_type(ITEM_DOCUMENT))
+    sentence_map = {}
+    chapter_map = {}
+    all_docs = []
 
-    docs = []
-    sentence_map = {}  # chapter index -> total sentences
-    chapter_map = {}  # chapter index -> visible chapter name
-    chapter_pattern = re.compile(r"chapter\s+(\d+|[ivxlc]+)", re.IGNORECASE)
+    for i, item in enumerate(book.spine):
+        idref = item[0]
+        chapter = book.get_item_with_id(idref)
+        if chapter is None or chapter.get_type() != ITEM_DOCUMENT:
+            continue
 
-    chapter_idx = 1
+        title = chapter.get_name() or f"Chapter {i+1}"
+        soup = BeautifulSoup(chapter.get_content(), 'html.parser')
+        text = soup.get_text().strip()
 
-    for item in manifest:
-        soup = BeautifulSoup(item.get_content(), "html.parser")
-        text = soup.get_text(separator="\n").strip()
         if not text:
             continue
 
-        # Try to detect chapter heading
-        heading = soup.find(['h1', 'h2', 'h3'])
-        heading_text = heading.get_text(strip=True) if heading else ""
-        match = chapter_pattern.search(heading_text)
-        if match:
-            chapter_map[chapter_idx] = heading_text
-        else:
-            chapter_map[chapter_idx] = f"(non-chapter) {item.get_name()}"
-
-        # Sentence chunking
         sentences = sent_tokenize(text)
-        sentence_map[chapter_idx] = len(sentences)
+        sentence_map[i] = len(sentences)
+        chapter_map[i] = title
 
-        for i in range(0, len(sentences), CHUNK_SIZE):
-            chunk_sentences = sentences[i:i + CHUNK_SIZE]
-            chunk_text = " ".join(chunk_sentences)
+        chunk_size = 5
+        for j in range(0, len(sentences), chunk_size):
+            chunk = " ".join(sentences[j:j+chunk_size])
+            if chunk.strip():
+                doc = Document(
+                    text=chunk,
+                    metadata={
+                        "spine_index": i,
+                        "chapter_title": title,
+                        "sentence_start": j,
+                        "sentence_end": min(j + chunk_size - 1, len(sentences) - 1)
+                    }
+                )
+                all_docs.append(doc)
 
-            docs.append(Document(
-                text=chunk_text,
-                metadata={
-                    "spine_index": chapter_idx,
-                    "sentence_start": i + 1,
-                    "sentence_end": min(i + CHUNK_SIZE, len(sentences)),
-                    "chapter_title": heading_text,
-                    "source_file": item.get_name(),
-                    "source": os.path.basename(epub_path),
-                }
-            ))
-
-        chapter_idx += 1
-
-    return docs, sentence_map, chapter_map
+    return all_docs, sentence_map, chapter_map

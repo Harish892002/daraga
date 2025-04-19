@@ -1,59 +1,63 @@
-from llama_index.core import VectorStoreIndex
-from llama_index.vector_stores.pinecone import PineconeVectorStore
-from llama_index.core.storage import StorageContext
-from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.postprocessor import LLMRerank
-from llama_index.llms.ollama import Ollama
-from llama_index.embeddings.ollama import OllamaEmbedding
-from pinecone import Pinecone
 import os
+from llama_index.vector_stores.pinecone import PineconeVectorStore
+from llama_index.embeddings.nomic import NomicEmbedding
+from llama_index.llms.ollama import Ollama
+from llama_index.core import StorageContext,VectorStoreIndex, Settings
+from llama_index.core.query_engine import RetrieverQueryEngine
+from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 load_dotenv()
 
-def initialize_rag_stack(documents):
-    pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    pinecone_env = os.getenv("PINECONE_ENV")
-    pinecone_index_name = os.getenv("PINECONE_INDEX", "llama-index-demo")
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east-1")
+DEFAULT_DIMENSIONS = 1024
 
-    # 🧠 LLM setup
-    llm = Ollama(model="hermes3:8b")
-    embed_model = OllamaEmbedding(model_name="nomic-embed-text")
+# Initialize Pinecone client
+pc = Pinecone(api_key=PINECONE_API_KEY)
 
-    # 📦 Pinecone setup
-    pc = Pinecone(api_key=pinecone_api_key)
+# Set global settings for embedding and LLM
+embed_model = HuggingFaceEmbedding(
+    model_name="intfloat/multilingual-e5-large",
+    embed_batch_size=32  # optional tuning
+)
+Settings.embed_model = embed_model
+Settings.llm = Ollama(model="hermes3:8b")
 
-    # ❌ Optional: clear existing index if exists
-    if pinecone_index_name in pc.list_indexes().names():
-        print(f"⚠️ Deleting existing Pinecone index '{pinecone_index_name}'...")
-        pc.delete_index(pinecone_index_name)
+def initialize_rag_stack(documents, index_name: str):
+    if not documents:
+        raise ValueError("No documents provided for indexing.")
+    if not index_name:
+        raise ValueError("Index name must be provided.")
 
-    from pinecone import ServerlessSpec
-    pc.create_index(
-        name=pinecone_index_name,
-        dimension=768,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region=pinecone_env)
-    )
+    print(f"📦 Checking Pinecone index: {index_name}")
+    existing_indexes = pc.list_indexes().names()
 
-    index = pc.Index(pinecone_index_name)
-    vector_store = PineconeVectorStore(pinecone_index=index)
+    if index_name not in existing_indexes:
+        print(f"✅ Creating Pinecone index: {index_name}")
+        pc.create_index(
+            name=index_name,
+            dimension=DEFAULT_DIMENSIONS,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region=PINECONE_ENV),
+        )
+    else:
+        print(f"📂 Pinecone index '{index_name}' already exists.")
+
+    pinecone_index = pc.Index(index_name)
+    vector_store = PineconeVectorStore(pinecone_index=pinecone_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    # 🧱 Build index from docs
-    rag_index = VectorStoreIndex.from_documents(
-        documents, storage_context=storage_context, llm=llm, embed_model=embed_model
+    print("📥 Building vector index with documents...")
+    index = VectorStoreIndex.from_documents(
+        documents,
+        storage_context=storage_context,
     )
 
-    # 🔄 Enhanced retriever with reranker
-    retriever = VectorIndexRetriever(index=rag_index, similarity_top_k=5)
-    reranker = LLMRerank(choice_batch_size=3, llm=llm)
-
     query_engine = RetrieverQueryEngine.from_args(
-    retriever=retriever,
-    node_postprocessors=[reranker],
-    llm=llm  # 👈 This is the key fix!
-)
+        retriever=index.as_retriever(similarity_top_k=5)
+    )
 
+    print("✅ RAG stack initialized.")
     return query_engine

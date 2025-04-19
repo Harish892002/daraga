@@ -14,7 +14,7 @@
 - **Frontend**: HTML, CSS, JavaScript
 - **Backend**: Python (FastAPI)
 - **Large Language Model (LLM)**: `hermes-3b` or `hermes-3:8b`
-- **Embeddings**: `all-MiniLM-L6-v2`
+- **Embeddings**: `intfloat/multilingual-e5-large`
 - **Vector Database**: Pinecone
 - **Deployment**: REST API
 
