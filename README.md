@@ -38,7 +38,7 @@
 
 3. **Run the Application**
    ```bash
-   uvicorn src.api:app --reload 
+   uvicorn src.api:app
    ```
 
 ## Project Structure
