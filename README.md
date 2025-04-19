@@ -38,7 +38,7 @@
 
 3. **Run the Application**
    ```bash
-   python3 -m src.main
+   uvicorn src.api:app --reload 
    ```
 
 ## Project Structure
