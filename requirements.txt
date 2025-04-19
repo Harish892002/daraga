@@ -4,7 +4,6 @@ llama-index-core==0.11.23
 llama-index-llms-ollama==0.1.5
 llama-index-embeddings-huggingface==0.3.0
 llama-index-vector-stores-pinecone==0.1.5
-llama-index-readers-file==0.1.3
 sentence-transformers==2.2.2
 
 # Web + Server
@@ -21,11 +20,10 @@ nltk==3.8.1
 # Pinecone
 pinecone-client>=3.0.0
 
-# Embedding model
+# Embedding & LLM backends
 transformers==4.38.2
 torch==2.2.2
 
 # Utilities
 python-dotenv==1.0.1
-tqdm==4.66.2
 requests==2.31.0
