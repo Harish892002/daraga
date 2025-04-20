@@ -4,8 +4,9 @@ from ebooklib import epub, ITEM_DOCUMENT
 from bs4 import BeautifulSoup
 import nltk
 from llama_index.core.schema import Document
-nltk.download('punkt')
 from nltk.tokenize import sent_tokenize
+
+nltk.download('punkt')
 
 DATA_DIR = "data"
 

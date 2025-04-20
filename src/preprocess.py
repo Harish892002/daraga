@@ -1,4 +1,3 @@
-import os
 import nltk
 from nltk.tokenize import sent_tokenize
 from src.loaders.epub import load_epub_documents
